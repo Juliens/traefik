@@ -16,7 +16,6 @@ import (
 	"github.com/docker/cli/cli/connhelper"
 	dockertypes "github.com/docker/docker/api/types"
 	dockercontainertypes "github.com/docker/docker/api/types/container"
-	eventtypes "github.com/docker/docker/api/types/events"
 	"github.com/docker/docker/api/types/filters"
 	swarmtypes "github.com/docker/docker/api/types/swarm"
 	"github.com/docker/docker/api/types/versions"
@@ -211,94 +210,46 @@ func (p *Provider) Provide(configurationChan chan<- dynamic.Message, pool *safe.
 				logger.Errorf("Failed to retrieve information of the docker client and server host: %s", err)
 				return err
 			}
+
 			logger.Debugf("Provider connection established with docker %s (API %s)", serverVersion.Version, serverVersion.APIVersion)
-			var dockerDataList []dockerData
-			if p.SwarmMode {
-				dockerDataList, err = p.listServices(ctx, dockerClient)
+			handleNewConfiguration := func() {
+				message, err := p.createMessage(ctx, dockerClient)
 				if err != nil {
-					logger.Errorf("Failed to list services for docker swarm mode, error %s", err)
-					return err
+					logger.Errorf("Failed to create message: %s", err)
+					return
 				}
-			} else {
-				dockerDataList, err = p.listContainers(ctx, dockerClient)
-				if err != nil {
-					logger.Errorf("Failed to list containers for docker, error %s", err)
-					return err
+
+				if message != nil {
+					select {
+					case configurationChan <- *message:
+					case <-ctx.Done():
+					}
 				}
 			}
 
-			configuration := p.buildConfiguration(ctxLog, dockerDataList)
-			configurationChan <- dynamic.Message{
-				ProviderName:  "docker",
-				Configuration: configuration,
-			}
+			handleNewConfiguration()
+
 			if p.Watch {
 				if p.SwarmMode {
-					errChan := make(chan error)
 
 					// TODO: This need to be change. Linked to Swarm events docker/docker#23827
 					ticker := time.NewTicker(time.Duration(p.SwarmModeRefreshSeconds))
 
-					pool.GoCtx(func(ctx context.Context) {
-						ctx = log.With(ctx, log.Str(log.ProviderName, "docker"))
-						logger := log.FromContext(ctx)
-
-						defer close(errChan)
-						for {
-							select {
-							case <-ticker.C:
-								services, err := p.listServices(ctx, dockerClient)
-								if err != nil {
-									logger.Errorf("Failed to list services for docker, error %s", err)
-									errChan <- err
-									return
-								}
-
-								configuration := p.buildConfiguration(ctx, services)
-								if configuration != nil {
-									configurationChan <- dynamic.Message{
-										ProviderName:  "docker",
-										Configuration: configuration,
-									}
-								}
-
-							case <-ctx.Done():
-								ticker.Stop()
-								return
-							}
+					for {
+						select {
+						case <-ticker.C:
+							handleNewConfiguration()
+						case <-ctx.Done():
+							ticker.Stop()
+							return nil
 						}
-					})
-					if err, ok := <-errChan; ok {
-						return err
 					}
-					// channel closed
+
 				} else {
 					f := filters.NewArgs()
 					f.Add("type", "container")
 					options := dockertypes.EventsOptions{
 						Filters: f,
-					}
-
-					startStopHandle := func(m eventtypes.Message) {
-						logger.Debugf("Provider event received %+v", m)
-						containers, err := p.listContainers(ctx, dockerClient)
-						if err != nil {
-							logger.Errorf("Failed to list containers for docker, error %s", err)
-							// Call cancel to get out of the monitor
-							return
-						}
-
-						configuration := p.buildConfiguration(ctx, containers)
-						if configuration != nil {
-							message := dynamic.Message{
-								ProviderName:  "docker",
-								Configuration: configuration,
-							}
-							select {
-							case configurationChan <- message:
-							case <-ctx.Done():
-							}
-						}
 					}
 
 					eventsc, errc := dockerClient.Events(ctx, options)
@@ -308,7 +259,8 @@ func (p *Provider) Provide(configurationChan chan<- dynamic.Message, pool *safe.
 							if event.Action == "start" ||
 								event.Action == "die" ||
 								strings.HasPrefix(event.Action, "health_status") {
-								startStopHandle(event)
+								logger.Debugf("Provider event received %+v", event)
+								handleNewConfiguration()
 							}
 						case err := <-errc:
 							if errors.Is(err, io.EOF) {
@@ -334,6 +286,41 @@ func (p *Provider) Provide(configurationChan chan<- dynamic.Message, pool *safe.
 	})
 
 	return nil
+}
+
+func (p *Provider) getDockerData(ctx context.Context, dockerClient client.APIClient) ([]dockerData, error) {
+	if p.SwarmMode {
+		dockerDataList, err := p.listServices(ctx, dockerClient)
+		if err != nil {
+			return nil, fmt.Errorf("failed to list services for docker swarm mode, error %s", err)
+		}
+		return dockerDataList, nil
+	}
+
+	dockerDataList, err := p.listContainers(ctx, dockerClient)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list containers for docker, error %s", err)
+	}
+
+	return dockerDataList, nil
+}
+
+func (p *Provider) createMessage(ctx context.Context, dockerClient client.APIClient) (*dynamic.Message, error) {
+	containers, err := p.getDockerData(ctx, dockerClient)
+	if err != nil {
+		return nil, err
+	}
+
+	configuration := p.buildConfiguration(ctx, containers)
+	if configuration == nil {
+		return nil, nil
+	}
+
+	return &dynamic.Message{
+		ProviderName:  "docker",
+		Configuration: configuration,
+	}, nil
+
 }
 
 func (p *Provider) listContainers(ctx context.Context, dockerClient client.ContainerAPIClient) ([]dockerData, error) {
