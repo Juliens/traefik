@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+
+	"github.com/valyala/fasthttp"
 )
 
 type serviceManager interface {
-	BuildHTTP(rootCtx context.Context, serviceName string) (http.Handler, error)
+	BuildHTTP(rootCtx context.Context, serviceName string) (fasthttp.RequestHandler, error)
 	LaunchHealthCheck()
 }
 
@@ -38,17 +40,17 @@ func NewInternalHandlers(next serviceManager, apiHandler, rest, metricsHandler, 
 }
 
 // BuildHTTP builds an HTTP handler.
-func (m *InternalHandlers) BuildHTTP(rootCtx context.Context, serviceName string) (http.Handler, error) {
+func (m *InternalHandlers) BuildHTTP(rootCtx context.Context, serviceName string) (fasthttp.RequestHandler, error) {
 	if !strings.HasSuffix(serviceName, "@internal") {
 		return m.serviceManager.BuildHTTP(rootCtx, serviceName)
 	}
 
-	internalHandler, err := m.get(serviceName)
-	if err != nil {
-		return nil, err
-	}
-
-	return internalHandler, nil
+	// internalHandler, err := m.get(serviceName)
+	// if err != nil {
+	return nil, errors.New("Wrong internal")
+	// }
+	//
+	// return internalHandler, nil
 }
 
 func (m *InternalHandlers) get(serviceName string) (http.Handler, error) {

@@ -77,13 +77,14 @@ require (
 	github.com/uber/jaeger-lib v2.2.0+incompatible
 	github.com/unrolled/render v1.0.2
 	github.com/unrolled/secure v1.0.7
+	github.com/valyala/fasthttp v1.23.0
 	github.com/vdemeester/shakers v0.1.0
 	github.com/vulcand/oxy v1.2.0
 	github.com/vulcand/predicate v1.1.0
 	go.elastic.co/apm v1.7.0
 	go.elastic.co/apm/module/apmot v1.7.0
 	golang.org/x/mod v0.3.0
-	golang.org/x/net v0.0.0-20200904194848-62affa334b73
+	golang.org/x/net v0.0.0-20210226101413-39120d07d75e
 	golang.org/x/time v0.0.0-20200630173020-3af7569d3a1e
 	google.golang.org/grpc v1.27.1
 	gopkg.in/DataDog/dd-trace-go.v1 v1.19.0

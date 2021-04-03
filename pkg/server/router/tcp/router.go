@@ -16,6 +16,7 @@ import (
 	tcpservice "github.com/traefik/traefik/v2/pkg/server/service/tcp"
 	"github.com/traefik/traefik/v2/pkg/tcp"
 	traefiktls "github.com/traefik/traefik/v2/pkg/tls"
+	"github.com/valyala/fasthttp"
 )
 
 const (
@@ -26,8 +27,8 @@ const (
 // NewManager Creates a new Manager.
 func NewManager(conf *runtime.Configuration,
 	serviceManager *tcpservice.Manager,
-	httpHandlers map[string]http.Handler,
-	httpsHandlers map[string]http.Handler,
+	httpHandlers map[string]fasthttp.RequestHandler,
+	httpsHandlers map[string]fasthttp.RequestHandler,
 	tlsManager *traefiktls.Manager,
 ) *Manager {
 	return &Manager{
@@ -42,8 +43,8 @@ func NewManager(conf *runtime.Configuration,
 // Manager is a route/router manager.
 type Manager struct {
 	serviceManager *tcpservice.Manager
-	httpHandlers   map[string]http.Handler
-	httpsHandlers  map[string]http.Handler
+	httpHandlers   map[string]fasthttp.RequestHandler
+	httpsHandlers  map[string]fasthttp.RequestHandler
 	tlsManager     *traefiktls.Manager
 	conf           *runtime.Configuration
 }
@@ -92,9 +93,9 @@ type nameAndConfig struct {
 	TLSConfig  *tls.Config
 }
 
-func (m *Manager) buildEntryPointHandler(ctx context.Context, configs map[string]*runtime.TCPRouterInfo, configsHTTP map[string]*runtime.RouterInfo, handlerHTTP, handlerHTTPS http.Handler) (*tcp.Router, error) {
+func (m *Manager) buildEntryPointHandler(ctx context.Context, configs map[string]*runtime.TCPRouterInfo, configsHTTP map[string]*runtime.RouterInfo, handlerHTTP, handlerHTTPS fasthttp.RequestHandler) (*tcp.Router, error) {
 	router := &tcp.Router{}
-	router.HTTPHandler(handlerHTTP)
+	router.FHTTPHandler(handlerHTTP)
 
 	defaultTLSConf, err := m.tlsManager.Get(defaultTLSStoreName, defaultTLSConfigName)
 	if err != nil {
@@ -159,19 +160,22 @@ func (m *Manager) buildEntryPointHandler(ctx context.Context, configs map[string
 		}
 	}
 
-	sniCheck := http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
-		if req.TLS == nil {
-			handlerHTTPS.ServeHTTP(rw, req)
+	sniCheck := func(requestCtx *fasthttp.RequestCtx) {
+		if requestCtx == nil {
+			return
+		}
+		if !requestCtx.IsTLS() {
+			handlerHTTPS(requestCtx)
 			return
 		}
 
-		host, _, err := net.SplitHostPort(req.Host)
+		host, _, err := net.SplitHostPort(string(requestCtx.Host()))
 		if err != nil {
-			host = req.Host
+			host = string(requestCtx.Host())
 		}
 
 		host = strings.TrimSpace(host)
-		serverName := strings.TrimSpace(req.TLS.ServerName)
+		serverName := strings.TrimSpace(requestCtx.TLSConnectionState().ServerName)
 
 		// Domain Fronting
 		if !strings.EqualFold(host, serverName) {
@@ -181,18 +185,18 @@ func (m *Manager) buildEntryPointHandler(ctx context.Context, configs map[string
 			if tlsOptionHeader != tlsOptionSNI {
 				log.WithoutContext().
 					WithField("host", host).
-					WithField("req.Host", req.Host).
-					WithField("req.TLS.ServerName", req.TLS.ServerName).
+					WithField("req.Host", string(requestCtx.Host())).
+					WithField("req.TLS.ServerName", serverName).
 					Debugf("TLS options difference: SNI=%s, Header:%s", tlsOptionSNI, tlsOptionHeader)
-				http.Error(rw, http.StatusText(http.StatusMisdirectedRequest), http.StatusMisdirectedRequest)
+				requestCtx.SetStatusCode(http.StatusMisdirectedRequest)
 				return
 			}
 		}
 
-		handlerHTTPS.ServeHTTP(rw, req)
-	})
+		handlerHTTPS(requestCtx)
+	}
 
-	router.HTTPSHandler(sniCheck, defaultTLSConf)
+	router.FHTTPSHandler(sniCheck, defaultTLSConf)
 
 	logger := log.FromContext(ctx)
 	for hostSNI, tlsConfigs := range tlsOptionsForHostSNI {

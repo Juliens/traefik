@@ -13,6 +13,7 @@ import (
 
 	"github.com/traefik/traefik/v2/pkg/log"
 	"github.com/traefik/traefik/v2/pkg/types"
+	"github.com/valyala/fasthttp"
 )
 
 // Router is a TCP router.
@@ -22,6 +23,8 @@ type Router struct {
 	httpsForwarder    Handler
 	httpHandler       http.Handler
 	httpsHandler      http.Handler
+	fhttpHandler      fasthttp.RequestHandler
+	fhttpsHandler     fasthttp.RequestHandler
 	httpsTLSConfig    *tls.Config // default TLS config
 	catchAllNoTLS     Handler
 	hostHTTPTLSConfig map[string]*tls.Config // TLS configs keyed by SNI
@@ -137,6 +140,9 @@ func (r *Router) GetConn(conn WriteCloser, peeked string) WriteCloser {
 	return conn
 }
 
+func (r *Router) GetFastHTTPHandler() fasthttp.RequestHandler  { return r.fhttpHandler }
+func (r *Router) GetFastHTTPSHandler() fasthttp.RequestHandler { return r.fhttpsHandler }
+
 // GetHTTPHandler gets the attached http handler.
 func (r *Router) GetHTTPHandler() http.Handler {
 	return r.httpHandler
@@ -162,6 +168,15 @@ func (r *Router) HTTPSForwarder(handler Handler) {
 		Next:   handler,
 		Config: r.httpsTLSConfig,
 	}
+}
+
+func (r *Router) FHTTPHandler(handler fasthttp.RequestHandler) {
+	r.fhttpHandler = handler
+}
+
+func (r *Router) FHTTPSHandler(handler fasthttp.RequestHandler, config *tls.Config) {
+	r.fhttpsHandler = handler
+	r.httpsTLSConfig = config
 }
 
 // HTTPHandler attaches http handlers on the router.

@@ -4,27 +4,24 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httputil"
+	"net/textproto"
 	"net/url"
 	"reflect"
+	"strings"
 	"time"
 
-	"github.com/containous/alice"
 	"github.com/traefik/traefik/v2/pkg/config/dynamic"
 	"github.com/traefik/traefik/v2/pkg/config/runtime"
 	"github.com/traefik/traefik/v2/pkg/healthcheck"
 	"github.com/traefik/traefik/v2/pkg/log"
 	"github.com/traefik/traefik/v2/pkg/metrics"
-	"github.com/traefik/traefik/v2/pkg/middlewares/accesslog"
-	"github.com/traefik/traefik/v2/pkg/middlewares/emptybackendhandler"
-	metricsMiddle "github.com/traefik/traefik/v2/pkg/middlewares/metrics"
-	"github.com/traefik/traefik/v2/pkg/middlewares/pipelining"
 	"github.com/traefik/traefik/v2/pkg/safe"
 	"github.com/traefik/traefik/v2/pkg/server/cookie"
 	"github.com/traefik/traefik/v2/pkg/server/provider"
-	"github.com/traefik/traefik/v2/pkg/server/service/loadbalancer/mirror"
-	"github.com/traefik/traefik/v2/pkg/server/service/loadbalancer/wrr"
+	"github.com/valyala/fasthttp"
 	"github.com/vulcand/oxy/roundrobin"
 )
 
@@ -67,7 +64,7 @@ type Manager struct {
 }
 
 // BuildHTTP Creates a http.Handler for a service configuration.
-func (m *Manager) BuildHTTP(rootCtx context.Context, serviceName string) (http.Handler, error) {
+func (m *Manager) BuildHTTP(rootCtx context.Context, serviceName string) (fasthttp.RequestHandler, error) {
 	ctx := log.With(rootCtx, log.Str(log.ServiceName, serviceName))
 
 	serviceName = provider.GetQualifiedName(ctx, serviceName)
@@ -91,7 +88,7 @@ func (m *Manager) BuildHTTP(rootCtx context.Context, serviceName string) (http.H
 		return nil, err
 	}
 
-	var lb http.Handler
+	var lb fasthttp.RequestHandler
 
 	switch {
 	case conf.LoadBalancer != nil:
@@ -101,20 +98,20 @@ func (m *Manager) BuildHTTP(rootCtx context.Context, serviceName string) (http.H
 			conf.AddError(err, true)
 			return nil, err
 		}
-	case conf.Weighted != nil:
-		var err error
-		lb, err = m.getWRRServiceHandler(ctx, serviceName, conf.Weighted)
-		if err != nil {
-			conf.AddError(err, true)
-			return nil, err
-		}
-	case conf.Mirroring != nil:
-		var err error
-		lb, err = m.getMirrorServiceHandler(ctx, conf.Mirroring)
-		if err != nil {
-			conf.AddError(err, true)
-			return nil, err
-		}
+	// case conf.Weighted != nil:
+	// 	var err error
+	// 	lb, err = m.getWRRServiceHandler(ctx, serviceName, conf.Weighted)
+	// 	if err != nil {
+	// 		conf.AddError(err, true)
+	// 		return nil, err
+	// 	}
+	// case conf.Mirroring != nil:
+	// 	var err error
+	// 	lb, err = m.getMirrorServiceHandler(ctx, conf.Mirroring)
+	// 	if err != nil {
+	// 		conf.AddError(err, true)
+	// 		return nil, err
+	// 	}
 	default:
 		sErr := fmt.Errorf("the service %q does not have any type defined", serviceName)
 		conf.AddError(sErr, true)
@@ -124,92 +121,156 @@ func (m *Manager) BuildHTTP(rootCtx context.Context, serviceName string) (http.H
 	return lb, nil
 }
 
-func (m *Manager) getMirrorServiceHandler(ctx context.Context, config *dynamic.Mirroring) (http.Handler, error) {
-	serviceHandler, err := m.BuildHTTP(ctx, config.Service)
-	if err != nil {
-		return nil, err
-	}
+// func (m *Manager) getMirrorServiceHandler(ctx context.Context, config *dynamic.Mirroring) (http.Handler, error) {
+// 	serviceHandler, err := m.BuildHTTP(ctx, config.Service)
+// 	if err != nil {
+// 		return nil, err
+// 	}
+//
+// 	maxBodySize := defaultMaxBodySize
+// 	if config.MaxBodySize != nil {
+// 		maxBodySize = *config.MaxBodySize
+// 	}
+// 	handler := mirror.New(serviceHandler, m.routinePool, maxBodySize)
+// 	for _, mirrorConfig := range config.Mirrors {
+// 		mirrorHandler, err := m.BuildHTTP(ctx, mirrorConfig.Name)
+// 		if err != nil {
+// 			return nil, err
+// 		}
+//
+// 		err = handler.AddMirror(mirrorHandler, mirrorConfig.Percent)
+// 		if err != nil {
+// 			return nil, err
+// 		}
+// 	}
+// 	return handler, nil
+// }
+//
+// func (m *Manager) getWRRServiceHandler(ctx context.Context, serviceName string, config *dynamic.WeightedRoundRobin) (http.Handler, error) {
+// 	// TODO Handle accesslog and metrics with multiple service name
+// 	if config.Sticky != nil && config.Sticky.Cookie != nil {
+// 		config.Sticky.Cookie.Name = cookie.GetName(config.Sticky.Cookie.Name, serviceName)
+// 	}
+//
+// 	balancer := wrr.New(config.Sticky)
+// 	for _, service := range config.Services {
+// 		serviceHandler, err := m.BuildHTTP(ctx, service.Name)
+// 		if err != nil {
+// 			return nil, err
+// 		}
+//
+// 		balancer.AddService(service.Name, serviceHandler, service.Weight)
+// 	}
+// 	return balancer, nil
+// }
 
-	maxBodySize := defaultMaxBodySize
-	if config.MaxBodySize != nil {
-		maxBodySize = *config.MaxBodySize
-	}
-	handler := mirror.New(serviceHandler, m.routinePool, maxBodySize)
-	for _, mirrorConfig := range config.Mirrors {
-		mirrorHandler, err := m.BuildHTTP(ctx, mirrorConfig.Name)
-		if err != nil {
-			return nil, err
-		}
-
-		err = handler.AddMirror(mirrorHandler, mirrorConfig.Percent)
-		if err != nil {
-			return nil, err
-		}
-	}
-	return handler, nil
+var hopHeaders = []string{
+	"Connection",
+	"Proxy-Connection", // non-standard but still sent by libcurl and rejected by e.g. google
+	"Keep-Alive",
+	"Proxy-Authenticate",
+	"Proxy-Authorization",
+	"Te",      // canonicalized version of "TE"
+	"Trailer", // not Trailers per URL above; https://www.rfc-editor.org/errata_search.php?eid=4522
+	"Transfer-Encoding",
+	"Upgrade",
 }
 
-func (m *Manager) getWRRServiceHandler(ctx context.Context, serviceName string, config *dynamic.WeightedRoundRobin) (http.Handler, error) {
-	// TODO Handle accesslog and metrics with multiple service name
-	if config.Sticky != nil && config.Sticky.Cookie != nil {
-		config.Sticky.Cookie.Name = cookie.GetName(config.Sticky.Cookie.Name, serviceName)
-	}
-
-	balancer := wrr.New(config.Sticky)
-	for _, service := range config.Services {
-		serviceHandler, err := m.BuildHTTP(ctx, service.Name)
-		if err != nil {
-			return nil, err
+func removeConnectionHeaders(h fasthttp.RequestHeader) {
+	for _, f := range h.Peek("Connection") {
+		for _, sf := range strings.Split(string(f), ",") {
+			if sf = textproto.TrimString(sf); sf != "" {
+				h.Del(sf)
+			}
 		}
-
-		balancer.AddService(service.Name, serviceHandler, service.Weight)
 	}
-	return balancer, nil
 }
 
-func (m *Manager) getLoadBalancerServiceHandler(ctx context.Context, serviceName string, service *dynamic.ServersLoadBalancer) (http.Handler, error) {
-	if service.PassHostHeader == nil {
-		defaultPassHostHeader := true
-		service.PassHostHeader = &defaultPassHostHeader
-	}
+func (m *Manager) getLoadBalancerServiceHandler(ctx context.Context, serviceName string, service *dynamic.ServersLoadBalancer) (fasthttp.RequestHandler, error) {
+	hosts := make(chan string, 100)
+	go func() {
+		for {
+			for _, host := range service.Servers {
+				parse, _ := url.Parse(host.URL)
 
-	if len(service.ServersTransport) > 0 {
-		service.ServersTransport = provider.GetQualifiedName(ctx, service.ServersTransport)
-	}
+				hosts <- parse.Host
+			}
+		}
+	}()
 
-	roundTripper, err := m.roundTripperManager.Get(service.ServersTransport)
-	if err != nil {
-		return nil, err
-	}
+	return func(ctx *fasthttp.RequestCtx) {
+		host := <-hosts
+		log.WithoutContext().Debugf("REQUEST IN FASTHTTP FOR %s", host)
+		ctx.Request.SetHost(host)
 
-	fwd, err := buildProxy(service.PassHostHeader, service.ResponseForwarding, roundTripper, m.bufferPool)
-	if err != nil {
-		return nil, err
-	}
+		removeConnectionHeaders(ctx.Request.Header)
 
-	alHandler := func(next http.Handler) (http.Handler, error) {
-		return accesslog.NewFieldHandler(next, accesslog.ServiceName, serviceName, accesslog.AddServiceFields), nil
-	}
-	chain := alice.New()
-	if m.metricsRegistry != nil && m.metricsRegistry.IsSvcEnabled() {
-		chain = chain.Append(metricsMiddle.WrapServiceHandler(ctx, m.metricsRegistry, serviceName))
-	}
+		for _, h := range hopHeaders {
+			ctx.Request.Header.Del(h)
+		}
 
-	handler, err := chain.Append(alHandler).Then(pipelining.New(ctx, fwd, "pipelining"))
-	if err != nil {
-		return nil, err
-	}
+		if clientIP, _, err := net.SplitHostPort(ctx.RemoteAddr().String()); err == nil {
+			// If we aren't the first proxy retain prior
+			// X-Forwarded-For information as a comma+space
+			// separated list and fold multiple headers into one.
+			prior := ctx.Request.Header.Peek("X-Forwarded-For")
 
-	balancer, err := m.getLoadBalancer(ctx, serviceName, service, handler)
-	if err != nil {
-		return nil, err
-	}
+			if len(prior) > 0 {
+				clientIP = string(prior) + ", " + clientIP
+			}
 
-	// TODO rename and checks
-	m.balancers[serviceName] = append(m.balancers[serviceName], balancer)
+			ctx.Request.Header.Set("X-Forwarded-For", clientIP)
+		}
 
-	// Empty (backend with no servers)
-	return emptybackendhandler.New(balancer), nil
+		fasthttp.Do(&ctx.Request, &ctx.Response)
+
+		for _, h := range hopHeaders {
+			ctx.Response.Header.Del(h)
+		}
+	}, nil
+	//
+	// if service.PassHostHeader == nil {
+	// 	defaultPassHostHeader := true
+	// 	service.PassHostHeader = &defaultPassHostHeader
+	// }
+	//
+	// if len(service.ServersTransport) > 0 {
+	// 	service.ServersTransport = provider.GetQualifiedName(ctx, service.ServersTransport)
+	// }
+	//
+	// roundTripper, err := m.roundTripperManager.Get(service.ServersTransport)
+	// if err != nil {
+	// 	return nil, err
+	// }
+	//
+	// fwd, err := buildProxy(service.PassHostHeader, service.ResponseForwarding, roundTripper, m.bufferPool)
+	// if err != nil {
+	// 	return nil, err
+	// }
+	//
+	// alHandler := func(next http.Handler) (http.Handler, error) {
+	// 	return accesslog.NewFieldHandler(next, accesslog.ServiceName, serviceName, accesslog.AddServiceFields), nil
+	// }
+	// chain := alice.New()
+	// if m.metricsRegistry != nil && m.metricsRegistry.IsSvcEnabled() {
+	// 	chain = chain.Append(metricsMiddle.WrapServiceHandler(ctx, m.metricsRegistry, serviceName))
+	// }
+	//
+	// handler, err := chain.Append(alHandler).Then(pipelining.New(ctx, fwd, "pipelining"))
+	// if err != nil {
+	// 	return nil, err
+	// }
+	//
+	// balancer, err := m.getLoadBalancer(ctx, serviceName, service, handler)
+	// if err != nil {
+	// 	return nil, err
+	// }
+	//
+	// // TODO rename and checks
+	// m.balancers[serviceName] = append(m.balancers[serviceName], balancer)
+	//
+	// // Empty (backend with no servers)
+	// return emptybackendhandler.New(balancer), nil
 }
 
 // LaunchHealthCheck Launches the health checks.

@@ -17,12 +17,10 @@ import (
 	"github.com/traefik/traefik/v2/pkg/ip"
 	"github.com/traefik/traefik/v2/pkg/log"
 	"github.com/traefik/traefik/v2/pkg/middlewares"
-	"github.com/traefik/traefik/v2/pkg/middlewares/forwardedheaders"
 	"github.com/traefik/traefik/v2/pkg/safe"
 	"github.com/traefik/traefik/v2/pkg/server/router"
 	"github.com/traefik/traefik/v2/pkg/tcp"
-	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/h2c"
+	"github.com/valyala/fasthttp"
 )
 
 var httpServerLogger = stdlog.New(log.WithoutContext().WriterLevel(logrus.DebugLevel), "", 0)
@@ -244,21 +242,21 @@ func (e *TCPEntryPoint) Shutdown(ctx context.Context) {
 
 	shutdownServer := func(server stoppable) {
 		defer wg.Done()
-		err := server.Shutdown(ctx)
+		err := server.Shutdown()
 		if err == nil {
 			return
 		}
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			logger.Debugf("Server failed to shutdown within deadline because: %s", err)
-			if err = server.Close(); err != nil {
-				logger.Error(err)
-			}
+			// if err = server.Close(); err != nil {
+			// 	logger.Error(err)
+			// }
 			return
 		}
 		logger.Error(err)
 		// We expect Close to fail again because Shutdown most likely failed when trying to close a listener.
 		// We still call it however, to make sure that all connections get closed as well.
-		server.Close()
+		// server.Close()
 	}
 
 	if e.httpServer.Server != nil {
@@ -270,10 +268,10 @@ func (e *TCPEntryPoint) Shutdown(ctx context.Context) {
 		wg.Add(1)
 		go shutdownServer(e.httpsServer.Server)
 
-		if e.http3Server != nil {
-			wg.Add(1)
-			go shutdownServer(e.http3Server)
-		}
+		// if e.http3Server != nil {
+		// 	wg.Add(1)
+		// 	go shutdownServer(e.http3Server)
+		// }
 	}
 
 	if e.tracker != nil {
@@ -299,18 +297,18 @@ func (e *TCPEntryPoint) Shutdown(ctx context.Context) {
 func (e *TCPEntryPoint) SwitchRouter(rt *tcp.Router) {
 	rt.HTTPForwarder(e.httpServer.Forwarder)
 
-	httpHandler := rt.GetHTTPHandler()
+	httpHandler := rt.GetFastHTTPHandler()
 	if httpHandler == nil {
-		httpHandler = router.BuildDefaultHTTPRouter()
+		httpHandler = router.BuildDefaultFastHTTPRouter()
 	}
 
 	e.httpServer.Switcher.UpdateHandler(httpHandler)
 
 	rt.HTTPSForwarder(e.httpsServer.Forwarder)
 
-	httpsHandler := rt.GetHTTPSHandler()
+	httpsHandler := rt.GetFastHTTPSHandler()
 	if httpsHandler == nil {
-		httpsHandler = router.BuildDefaultHTTPRouter()
+		httpsHandler = router.BuildDefaultFastHTTPRouter()
 	}
 
 	e.httpsServer.Switcher.UpdateHandler(httpsHandler)
@@ -485,8 +483,8 @@ func (c *connectionTracker) Close() {
 }
 
 type stoppable interface {
-	Shutdown(context.Context) error
-	Close() error
+	Shutdown() error
+	// Close() error
 }
 
 type stoppableServer interface {
@@ -497,35 +495,40 @@ type stoppableServer interface {
 type httpServer struct {
 	Server    stoppableServer
 	Forwarder *httpForwarder
-	Switcher  *middlewares.HTTPHandlerSwitcher
+	Switcher  *middlewares.FastHTTPHandlerSwitcher
 }
 
 func createHTTPServer(ctx context.Context, ln net.Listener, configuration *static.EntryPoint, withH2c bool) (*httpServer, error) {
-	httpSwitcher := middlewares.NewHandlerSwitcher(router.BuildDefaultHTTPRouter())
+	httpSwitcher := middlewares.NewFastHandlerSwitcher(router.BuildDefaultFastHTTPRouter())
 
-	var handler http.Handler
-	var err error
-	handler, err = forwardedheaders.NewXForwarded(
-		configuration.ForwardedHeaders.Insecure,
-		configuration.ForwardedHeaders.TrustedIPs,
-		httpSwitcher)
+	var handler fasthttp.RequestHandler
+	handler = httpSwitcher.Serve
 
-	if err != nil {
-		return nil, err
-	}
+	// TODO xforwarded
+	// var handler http.Handler
+	// var err error
+	// handler, err = forwardedheaders.NewXForwarded(
+	// 	configuration.ForwardedHeaders.Insecure,
+	// 	configuration.ForwardedHeaders.TrustedIPs,
+	// 	httpSwitcher)
 
-	if withH2c {
-		handler = h2c.NewHandler(handler, &http2.Server{})
-	}
+	// if err != nil {
+	// 	return nil, err
+	// }
 
-	serverHTTP := &http.Server{
-		Handler:      handler,
-		ErrorLog:     httpServerLogger,
+	// TODO h2c
+	// if withH2c {
+	// 	handler = h2c.NewHandler(handler, &http2.Server{})
+	// }
+
+	serverHTTP := &fasthttp.Server{
+		Handler: handler,
+		// ErrorLog:     httpServerLogger,
 		ReadTimeout:  time.Duration(configuration.Transport.RespondingTimeouts.ReadTimeout),
 		WriteTimeout: time.Duration(configuration.Transport.RespondingTimeouts.WriteTimeout),
 		IdleTimeout:  time.Duration(configuration.Transport.RespondingTimeouts.IdleTimeout),
 	}
-
+	serverHTTP.Shutdown()
 	listener := newHTTPForwarder(ln)
 	go func() {
 		err := serverHTTP.Serve(listener)

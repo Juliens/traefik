@@ -2,12 +2,14 @@ package rules
 
 import (
 	"fmt"
+	"net"
 	"net/http"
 	"strings"
 
 	"github.com/gorilla/mux"
 	"github.com/traefik/traefik/v2/pkg/log"
 	"github.com/traefik/traefik/v2/pkg/middlewares/requestdecorator"
+	"github.com/valyala/fasthttp"
 	"github.com/vulcand/predicate"
 )
 
@@ -26,7 +28,8 @@ var funcs = map[string]func(*mux.Route, ...string) error{
 // Router handle routing with rules.
 type Router struct {
 	*mux.Router
-	parser predicate.Parser
+	parser   predicate.Parser
+	handlers []MatcherHandler
 }
 
 // NewRouter returns a new router instance.
@@ -37,13 +40,13 @@ func NewRouter() (*Router, error) {
 	}
 
 	return &Router{
-		Router: mux.NewRouter().SkipClean(true),
+		// Router: mux.NewRouter().SkipClean(true),
 		parser: parser,
 	}, nil
 }
 
 // AddRoute add a new route to the router.
-func (r *Router) AddRoute(rule string, priority int, handler http.Handler) error {
+func (r *Router) AddRoute(rule string, priority int, handler fasthttp.RequestHandler) error {
 	parse, err := r.parser.Parse(rule)
 	if err != nil {
 		return fmt.Errorf("error while parsing rule %s: %w", rule, err)
@@ -58,15 +61,107 @@ func (r *Router) AddRoute(rule string, priority int, handler http.Handler) error
 		priority = len(rule)
 	}
 
-	route := r.NewRoute().Handler(handler).Priority(priority)
+	t := buildTree()
 
-	err = addRuleOnRoute(route, buildTree())
-	if err != nil {
-		route.BuildOnly()
-		return err
-	}
+	matcher := createMatcher(t)
+	r.handlers = append(r.handlers, MatcherHandler{Matcher: matcher, Handler: handler})
+	// route := r.NewRoute().Handler(handler).Priority(priority)
+
+	// err = addRuleOnRoute(route, buildTree())
+	// if err != nil {
+	// 	route.BuildOnly()
+	// 	return err
+	// }
 
 	return nil
+}
+
+type Matcher interface {
+	Match(ctx *fasthttp.RequestCtx) bool
+}
+
+type MatcherFunc func(ctx *fasthttp.RequestCtx) bool
+
+func (m MatcherFunc) Match(ctx *fasthttp.RequestCtx) bool {
+	return m(ctx)
+}
+
+type OrMatcher struct {
+	matchL Matcher
+	matchR Matcher
+}
+
+func (m OrMatcher) Match(ctx *fasthttp.RequestCtx) bool {
+	return m.matchL.Match(ctx) || m.matchR.Match(ctx)
+}
+
+type AndMatcher struct {
+	matchL Matcher
+	matchR Matcher
+}
+
+func (m AndMatcher) Match(ctx *fasthttp.RequestCtx) bool {
+	return m.matchL.Match(ctx) && m.matchR.Match(ctx)
+}
+
+func createMatcher(rule *tree) Matcher {
+	if rule.matcher == "or" {
+		return OrMatcher{matchL: createMatcher(rule.ruleLeft), matchR: createMatcher(rule.ruleRight)}
+	}
+	if rule.matcher == "and" {
+		return AndMatcher{matchL: createMatcher(rule.ruleLeft), matchR: createMatcher(rule.ruleRight)}
+	}
+	if strings.ToLower(rule.matcher) == "host" {
+		return MatcherFunc(func(ctx *fasthttp.RequestCtx) bool {
+			host := string(ctx.Host())
+			newHost, _, err := net.SplitHostPort(host)
+			if err == nil {
+				host = newHost
+			}
+			for _, v := range rule.value {
+				log.Debugf("HOST %s==%s", host, v)
+				if host == v {
+					return true
+				}
+			}
+			return false
+		})
+	}
+
+	if strings.ToLower(rule.matcher) == "pathprefix" {
+		return MatcherFunc(func(ctx *fasthttp.RequestCtx) bool {
+			path := string(ctx.Path())
+			for _, v := range rule.value {
+				log.Debug("Path", path, v)
+				if strings.HasPrefix(path, v) {
+					return true
+				}
+			}
+			return false
+		})
+	}
+
+	log.WithoutContext().Errorf("rule not handled %s", rule.matcher)
+	return MatcherFunc(func(ctx *fasthttp.RequestCtx) bool {
+		return false
+	})
+}
+
+type MatcherHandler struct {
+	Handler fasthttp.RequestHandler
+	Matcher Matcher
+}
+
+func (f *Router) Route(ctx *fasthttp.RequestCtx) {
+	log.WithoutContext().Debug("Route -----", f.handlers)
+	for _, handler := range f.handlers {
+		if handler.Matcher.Match(ctx) {
+			log.WithoutContext().Debug("MATCH")
+			handler.Handler(ctx)
+			return
+		}
+	}
+	ctx.SetStatusCode(http.StatusNotFound)
 }
 
 type tree struct {
