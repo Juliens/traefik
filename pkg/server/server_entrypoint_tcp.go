@@ -17,6 +17,7 @@ import (
 	"github.com/traefik/traefik/v2/pkg/ip"
 	"github.com/traefik/traefik/v2/pkg/log"
 	"github.com/traefik/traefik/v2/pkg/middlewares"
+	"github.com/traefik/traefik/v2/pkg/middlewares/forwardedheaders"
 	"github.com/traefik/traefik/v2/pkg/safe"
 	"github.com/traefik/traefik/v2/pkg/server/router"
 	"github.com/traefik/traefik/v2/pkg/tcp"
@@ -502,19 +503,16 @@ func createHTTPServer(ctx context.Context, ln net.Listener, configuration *stati
 	httpSwitcher := middlewares.NewFastHandlerSwitcher(router.BuildDefaultFastHTTPRouter())
 
 	var handler fasthttp.RequestHandler
-	handler = httpSwitcher.Serve
 
-	// TODO xforwarded
-	// var handler http.Handler
-	// var err error
-	// handler, err = forwardedheaders.NewXForwarded(
-	// 	configuration.ForwardedHeaders.Insecure,
-	// 	configuration.ForwardedHeaders.TrustedIPs,
-	// 	httpSwitcher)
+	xfor, err := forwardedheaders.NewXForwarded(
+		configuration.ForwardedHeaders.Insecure,
+		configuration.ForwardedHeaders.TrustedIPs,
+		httpSwitcher.Serve)
 
-	// if err != nil {
-	// 	return nil, err
-	// }
+	if err != nil {
+		return nil, err
+	}
+	handler = xfor.ServeHTTP
 
 	// TODO h2c
 	// if withH2c {

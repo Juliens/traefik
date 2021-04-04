@@ -8,6 +8,7 @@ import (
 	"github.com/traefik/traefik/v2/pkg/config/static"
 	"github.com/traefik/traefik/v2/pkg/metrics"
 	"github.com/traefik/traefik/v2/pkg/safe"
+	"github.com/valyala/fasthttp"
 )
 
 // ManagerFactory a factory of service manager.
@@ -16,9 +17,9 @@ type ManagerFactory struct {
 
 	roundTripperManager *RoundTripperManager
 
-	api              func(configuration *runtime.Configuration) http.Handler
+	api              func(configuration *runtime.Configuration) fasthttp.RequestHandler
 	restHandler      http.Handler
-	dashboardHandler http.Handler
+	dashboardHandler fasthttp.RequestHandler
 	metricsHandler   http.Handler
 	pingHandler      http.Handler
 	acmeHTTPHandler  http.Handler
@@ -39,7 +40,7 @@ func NewManagerFactory(staticConfiguration static.Configuration, routinesPool *s
 		factory.api = api.NewBuilder(staticConfiguration)
 
 		if staticConfiguration.API.Dashboard {
-			factory.dashboardHandler = api.DashboardHandler{Assets: staticConfiguration.API.DashboardAssets}
+			// factory.dashboardHandler = api.DashboardHandler{Assets: staticConfiguration.API.DashboardAssets}
 		}
 	}
 
@@ -65,7 +66,7 @@ func NewManagerFactory(staticConfiguration static.Configuration, routinesPool *s
 func (f *ManagerFactory) Build(configuration *runtime.Configuration) *InternalHandlers {
 	svcManager := NewManager(configuration.Services, f.metricsRegistry, f.routinesPool, f.roundTripperManager)
 
-	var apiHandler http.Handler
+	var apiHandler fasthttp.RequestHandler
 	if f.api != nil {
 		apiHandler = f.api(configuration)
 	}

@@ -27,7 +27,7 @@ var funcs = map[string]func(*mux.Route, ...string) error{
 
 // Router handle routing with rules.
 type Router struct {
-	*mux.Router
+	// *mux.Router
 	parser   predicate.Parser
 	handlers []MatcherHandler
 }
@@ -153,7 +153,6 @@ type MatcherHandler struct {
 }
 
 func (f *Router) Route(ctx *fasthttp.RequestCtx) {
-	log.WithoutContext().Debug("Route -----", f.handlers)
 	for _, handler := range f.handlers {
 		if handler.Matcher.Match(ctx) {
 			log.WithoutContext().Debug("MATCH")

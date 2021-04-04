@@ -20,6 +20,7 @@ import (
 	"github.com/traefik/traefik/v2/pkg/log"
 	traefiktls "github.com/traefik/traefik/v2/pkg/tls"
 	"github.com/traefik/traefik/v2/pkg/types"
+	"github.com/valyala/fasthttp"
 )
 
 type key string
@@ -161,6 +162,13 @@ func openAccessLogFile(filePath string) (*os.File, error) {
 // This creates data as the request passes through the middleware chain.
 func GetLogData(req *http.Request) *LogData {
 	if ld, ok := req.Context().Value(DataTableKey).(*LogData); ok {
+		return ld
+	}
+	return nil
+}
+
+func GetLogDataCtx(ctx *fasthttp.RequestCtx) *LogData {
+	if ld, ok := ctx.Value(DataTableKey).(*LogData); ok {
 		return ld
 	}
 	return nil

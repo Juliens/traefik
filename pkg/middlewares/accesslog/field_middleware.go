@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/valyala/fasthttp"
 	"github.com/vulcand/oxy/utils"
 )
 
@@ -12,31 +13,49 @@ type FieldApply func(rw http.ResponseWriter, r *http.Request, next http.Handler,
 
 // FieldHandler sends a new field to the logger.
 type FieldHandler struct {
-	next    http.Handler
+	next    fasthttp.RequestHandler
 	name    string
 	value   string
 	applyFn FieldApply
 }
 
 // NewFieldHandler creates a Field handler.
-func NewFieldHandler(next http.Handler, name, value string, applyFn FieldApply) http.Handler {
-	return &FieldHandler{next: next, name: name, value: value, applyFn: applyFn}
+func NewFieldHandler(next fasthttp.RequestHandler, name, value string, applyFn FieldApply) fasthttp.RequestHandler {
+	handler := &FieldHandler{next: next, name: name, value: value, applyFn: applyFn}
+	return handler.Serve
 }
 
-func (f *FieldHandler) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
-	table := GetLogData(req)
+func (f *FieldHandler) Serve(ctx *fasthttp.RequestCtx) {
+	table := GetLogDataCtx(ctx)
 	if table == nil {
-		f.next.ServeHTTP(rw, req)
+		f.next(ctx)
 		return
 	}
 
-	table.Core[f.name] = f.value
+	// table.Core[f.name] = f.value
+	//
+	// if f.applyFn != nil {
+	// 	f.applyFn(rw, req, f.next, table)
+	// } else {
+	// 	f.next.ServeHTTP(rw, req)
+	// }
 
-	if f.applyFn != nil {
-		f.applyFn(rw, req, f.next, table)
-	} else {
-		f.next.ServeHTTP(rw, req)
-	}
+}
+
+func (f *FieldHandler) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
+	// table := GetLogData(req)
+	// if table == nil {
+	// 	f.next.ServeHTTP(rw, req)
+	// 	return
+	// }
+	//
+	// table.Core[f.name] = f.value
+	//
+	// if f.applyFn != nil {
+	// 	f.applyFn(rw, req, f.next, table)
+	// } else {
+	// 	f.next.ServeHTTP(rw, req)
+	// }
 }
 
 // AddServiceFields add service fields.

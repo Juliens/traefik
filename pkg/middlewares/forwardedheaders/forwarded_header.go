@@ -2,11 +2,11 @@ package forwardedheaders
 
 import (
 	"net"
-	"net/http"
 	"os"
 	"strings"
 
 	"github.com/traefik/traefik/v2/pkg/ip"
+	"github.com/valyala/fasthttp"
 )
 
 const (
@@ -45,12 +45,12 @@ type XForwarded struct {
 	insecure   bool
 	trustedIps []string
 	ipChecker  *ip.Checker
-	next       http.Handler
+	next       fasthttp.RequestHandler
 	hostname   string
 }
 
 // NewXForwarded creates a new XForwarded.
-func NewXForwarded(insecure bool, trustedIps []string, next http.Handler) (*XForwarded, error) {
+func NewXForwarded(insecure bool, trustedIps []string, next fasthttp.RequestHandler) (*XForwarded, error) {
 	var ipChecker *ip.Checker
 	if len(trustedIps) > 0 {
 		var err error
@@ -91,9 +91,9 @@ func removeIPv6Zone(clientIP string) string {
 }
 
 // isWebsocketRequest returns whether the specified HTTP request is a websocket handshake request.
-func isWebsocketRequest(req *http.Request) bool {
+func isWebsocketRequest(ctx *fasthttp.RequestCtx) bool {
 	containsHeader := func(name, value string) bool {
-		h := unsafeHeader(req.Header).Get(name)
+		h := string(ctx.Request.Header.Peek(name))
 		for {
 			pos := strings.Index(h, ",")
 			if pos == -1 {
@@ -111,76 +111,81 @@ func isWebsocketRequest(req *http.Request) bool {
 	return containsHeader(connection, "upgrade") && containsHeader(upgrade, "websocket")
 }
 
-func forwardedPort(req *http.Request) string {
-	if req == nil {
+func forwardedPort(ctx *fasthttp.RequestCtx) string {
+	if ctx == nil {
 		return ""
 	}
 
-	if _, port, err := net.SplitHostPort(req.Host); err == nil && port != "" {
+	if _, port, err := net.SplitHostPort(string(ctx.Host())); err == nil && port != "" {
 		return port
 	}
 
-	if unsafeHeader(req.Header).Get(xForwardedProto) == "https" || unsafeHeader(req.Header).Get(xForwardedProto) == "wss" {
+	x := string(ctx.Request.Header.Peek(xForwardedProto))
+	if x == "https" || x == "wss" {
 		return "443"
 	}
 
-	if req.TLS != nil {
+	if ctx.IsTLS() {
 		return "443"
 	}
 
 	return "80"
 }
 
-func (x *XForwarded) rewrite(outreq *http.Request) {
-	if clientIP, _, err := net.SplitHostPort(outreq.RemoteAddr); err == nil {
+func (x *XForwarded) rewrite(outreq *fasthttp.RequestCtx) {
+	if clientIP, _, err := net.SplitHostPort(outreq.RemoteAddr().String()); err == nil {
 		clientIP = removeIPv6Zone(clientIP)
 
-		if unsafeHeader(outreq.Header).Get(xRealIP) == "" {
-			unsafeHeader(outreq.Header).Set(xRealIP, clientIP)
+		if len(outreq.Request.Header.Peek(xRealIP)) == 0 {
+			outreq.Request.Header.Set(xRealIP, clientIP)
 		}
 	}
 
-	xfProto := unsafeHeader(outreq.Header).Get(xForwardedProto)
-	if xfProto == "" {
+	xfProto := outreq.Request.Header.Peek(xForwardedProto)
+	if len(xfProto) == 0 {
 		if isWebsocketRequest(outreq) {
-			if outreq.TLS != nil {
-				unsafeHeader(outreq.Header).Set(xForwardedProto, "wss")
+			if outreq.IsTLS() {
+				outreq.Request.Header.Set(xForwardedProto, "wss")
 			} else {
-				unsafeHeader(outreq.Header).Set(xForwardedProto, "ws")
+				outreq.Request.Header.Set(xForwardedProto, "ws")
 			}
 		} else {
-			if outreq.TLS != nil {
-				unsafeHeader(outreq.Header).Set(xForwardedProto, "https")
+			if outreq.IsTLS() {
+				outreq.Request.Header.Set(xForwardedProto, "https")
 			} else {
-				unsafeHeader(outreq.Header).Set(xForwardedProto, "http")
+				outreq.Request.Header.Set(xForwardedProto, "http")
 			}
 		}
 	}
 
-	if xfPort := unsafeHeader(outreq.Header).Get(xForwardedPort); xfPort == "" {
-		unsafeHeader(outreq.Header).Set(xForwardedPort, forwardedPort(outreq))
+	if xfPort := outreq.Request.Header.Peek(xForwardedPort); len(xfPort) == 0 {
+		outreq.Request.Header.Set(xForwardedPort, forwardedPort(outreq))
 	}
 
-	if xfHost := unsafeHeader(outreq.Header).Get(xForwardedHost); xfHost == "" && outreq.Host != "" {
-		unsafeHeader(outreq.Header).Set(xForwardedHost, outreq.Host)
+	if xfHost := outreq.Request.Header.Peek(xForwardedHost); len(xfHost) == 0 && len(outreq.Host()) > 0 {
+		outreq.Request.Header.Set(xForwardedHost, string(outreq.Host()))
 	}
 
 	if x.hostname != "" {
-		unsafeHeader(outreq.Header).Set(xForwardedServer, x.hostname)
+		outreq.Request.Header.Set(xForwardedServer, x.hostname)
 	}
 }
 
 // ServeHTTP implements http.Handler.
-func (x *XForwarded) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if !x.insecure && !x.isTrustedIP(r.RemoteAddr) {
+func (x *XForwarded) ServeHTTP(ctx *fasthttp.RequestCtx) {
+	if !x.insecure && !x.isTrustedIP(ctx.RemoteAddr().String()) {
 		for _, h := range xHeaders {
-			unsafeHeader(r.Header).Del(h)
+			ctx.Request.Header.Del(h)
 		}
 	}
 
-	x.rewrite(r)
+	x.rewrite(ctx)
 
-	x.next.ServeHTTP(w, r)
+	x.next(ctx)
+}
+
+func (x *XForwarded) FastServe(ctx *fasthttp.RequestCtx) {
+
 }
 
 // unsafeHeader allows to manage Header values.

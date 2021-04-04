@@ -3,16 +3,15 @@ package middleware
 import (
 	"context"
 
-	"github.com/containous/alice"
 	"github.com/traefik/traefik/v2/pkg/config/static"
 	"github.com/traefik/traefik/v2/pkg/log"
 	"github.com/traefik/traefik/v2/pkg/metrics"
 	"github.com/traefik/traefik/v2/pkg/middlewares/accesslog"
-	metricsmiddleware "github.com/traefik/traefik/v2/pkg/middlewares/metrics"
 	"github.com/traefik/traefik/v2/pkg/middlewares/requestdecorator"
-	mTracing "github.com/traefik/traefik/v2/pkg/middlewares/tracing"
+	"github.com/traefik/traefik/v2/pkg/server/router/alice"
 	"github.com/traefik/traefik/v2/pkg/tracing"
 	"github.com/traefik/traefik/v2/pkg/tracing/jaeger"
+	"github.com/valyala/fasthttp"
 )
 
 // ChainBuilder Creates a middleware chain by entry point. It is used for middlewares that are created almost systematically and that need to be created before all others.
@@ -37,19 +36,22 @@ func NewChainBuilder(staticConfiguration static.Configuration, metricsRegistry m
 func (c *ChainBuilder) Build(ctx context.Context, entryPointName string) alice.Chain {
 	chain := alice.New()
 
-	if c.accessLoggerMiddleware != nil {
-		chain = chain.Append(accesslog.WrapHandler(c.accessLoggerMiddleware))
-	}
+	// if c.accessLoggerMiddleware != nil {
+	// 	chain = chain.Append(accesslog.WrapHandler(c.accessLoggerMiddleware))
+	// }
+	//
+	// if c.tracer != nil {
+	// 	chain = chain.Append(mTracing.WrapEntryPointHandler(ctx, c.tracer, entryPointName))
+	// }
+	//
+	// if c.metricsRegistry != nil && c.metricsRegistry.IsEpEnabled() {
+	// 	chain = chain.Append(metricsmiddleware.WrapEntryPointHandler(ctx, c.metricsRegistry, entryPointName))
+	// }
 
-	if c.tracer != nil {
-		chain = chain.Append(mTracing.WrapEntryPointHandler(ctx, c.tracer, entryPointName))
-	}
+	return chain.Append(func(handler fasthttp.RequestHandler) (fasthttp.RequestHandler, error) {
+		return c.requestDecorator.Serve(handler), nil
+	})
 
-	if c.metricsRegistry != nil && c.metricsRegistry.IsEpEnabled() {
-		chain = chain.Append(metricsmiddleware.WrapEntryPointHandler(ctx, c.metricsRegistry, entryPointName))
-	}
-
-	return chain.Append(requestdecorator.WrapHandler(c.requestDecorator))
 }
 
 // Close accessLogger and tracer.

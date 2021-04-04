@@ -5,12 +5,14 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/containous/alice"
 	"github.com/traefik/traefik/v2/pkg/config/runtime"
 	"github.com/traefik/traefik/v2/pkg/log"
+	"github.com/traefik/traefik/v2/pkg/middlewares/accesslog"
+	"github.com/traefik/traefik/v2/pkg/middlewares/recovery"
 	"github.com/traefik/traefik/v2/pkg/rules"
 	"github.com/traefik/traefik/v2/pkg/server/middleware"
 	"github.com/traefik/traefik/v2/pkg/server/provider"
+	"github.com/traefik/traefik/v2/pkg/server/router/alice"
 	"github.com/valyala/fasthttp"
 )
 
@@ -65,33 +67,32 @@ func (m *Manager) BuildHandlers(rootCtx context.Context, entryPoints []string, t
 			continue
 		}
 
-		// handlerWithAccessLog, err := alice.New(func(next http.Handler) (http.Handler, error) {
-		// 	return accesslog.NewFieldHandler(next, log.EntryPointName, entryPointName, accesslog.AddOriginFields), nil
-		// }).Then(handler)
-		// if err != nil {
-		// 	log.FromContext(ctx).Error(err)
-		entryPointHandlers[entryPointName] = handler
-		// } else {
-		// 	entryPointHandlers[entryPointName] = handlerWithAccessLog
-		// }
+		handlerWithAccessLog, err := alice.New(func(next fasthttp.RequestHandler) (fasthttp.RequestHandler, error) {
+			return accesslog.NewFieldHandler(next, log.EntryPointName, entryPointName, accesslog.AddOriginFields), nil
+		}).Then(handler)
+		if err != nil {
+			log.FromContext(ctx).Error(err)
+			entryPointHandlers[entryPointName] = handler
+		} else {
+			entryPointHandlers[entryPointName] = handlerWithAccessLog
+		}
 	}
 
-	// for _, entryPointName := range entryPoints {
-	// 	// ctx := log.With(rootCtx, log.Str(log.EntryPointName, entryPointName))
-	//
-	// 	handler, ok := entryPointHandlers[entryPointName]
-	// 	if !ok || handler == nil {
-	// 		handler = BuildDefaultFastHTTPRouter()
-	// 	}
-	//
-	// 	// handlerWithMiddlewares, err := m.chainBuilder.Build(ctx, entryPointName).Then(handler)
-	// 	// if err != nil {
-	// 	// 	log.FromContext(ctx).Error(err)
-	// 	// 	continue
-	// 	// }
-	// 	// entryPointHandlers[entryPointName] = handlerWithMiddlewares
-	// 	entryPointHandlers[entryPointName] = handler
-	// }
+	for _, entryPointName := range entryPoints {
+		ctx := log.With(rootCtx, log.Str(log.EntryPointName, entryPointName))
+
+		handler, ok := entryPointHandlers[entryPointName]
+		if !ok || handler == nil {
+			handler = BuildDefaultFastHTTPRouter()
+		}
+
+		handlerWithMiddlewares, err := m.chainBuilder.Build(ctx, entryPointName).Then(handler)
+		if err != nil {
+			log.FromContext(ctx).Error(err)
+			continue
+		}
+		entryPointHandlers[entryPointName] = handlerWithMiddlewares
+	}
 
 	return entryPointHandlers
 }
@@ -120,17 +121,15 @@ func (m *Manager) buildEntryPointHandler(ctx context.Context, configs map[string
 			continue
 		}
 	}
-	log.WithoutContext().Debug("router.Route")
-	return router.Route, nil
 
 	// router.SortRoutes()
-	//
-	// chain := alice.New()
-	// chain = chain.Append(func(next http.Handler) (http.Handler, error) {
-	// 	return recovery.New(ctx, next)
-	// })
-	//
-	// return chain.Then(router)
+
+	chain := alice.New()
+	chain = chain.Append(func(next fasthttp.RequestHandler) (fasthttp.RequestHandler, error) {
+		return recovery.New(next)
+	})
+
+	return chain.Then(router.Route)
 }
 
 func (m *Manager) buildRouterHandler(ctx context.Context, routerName string, routerConfig *runtime.RouterInfo) (fasthttp.RequestHandler, error) {
@@ -143,15 +142,15 @@ func (m *Manager) buildRouterHandler(ctx context.Context, routerName string, rou
 		return nil, err
 	}
 
-	// handlerWithAccessLog, err := alice.New(func(next http.Handler) (http.Handler, error) {
-	// 	return accesslog.NewFieldHandler(next, accesslog.RouterName, routerName, nil), nil
-	// }).Then(handler)
-	// if err != nil {
-	// 	log.FromContext(ctx).Error(err)
-	m.routerHandlers[routerName] = handler
-	// } else {
-	// 	m.routerHandlers[routerName] = handlerWithAccessLog
-	// }
+	handlerWithAccessLog, err := alice.New(func(next fasthttp.RequestHandler) (fasthttp.RequestHandler, error) {
+		return accesslog.NewFieldHandler(next, accesslog.RouterName, routerName, nil), nil
+	}).Then(handler)
+	if err != nil {
+		log.FromContext(ctx).Error(err)
+		m.routerHandlers[routerName] = handler
+	} else {
+		m.routerHandlers[routerName] = handlerWithAccessLog
+	}
 
 	return m.routerHandlers[routerName], nil
 }
@@ -172,15 +171,16 @@ func (m *Manager) buildHTTPHandler(ctx context.Context, router *runtime.RouterIn
 		return nil, err
 	}
 
-	return sHandler, nil
+	// return sHandler, nil
 
-	// mHandler := m.middlewaresBuilder.BuildChain(ctx, router.Middlewares)
-	//
-	// tHandler := func(next http.Handler) (http.Handler, error) {
+	mHandler := m.middlewaresBuilder.BuildChain(ctx, router.Middlewares)
+
+	// tHandler := func(next fasthttp.RequestHandler) (fasthttp.RequestHandler, error) {
 	// 	return tracing.NewForwarder(ctx, routerName, router.Service, next), nil
 	// }
-	//
+
 	// return alice.New().Extend(*mHandler).Append(tHandler).Then(sHandler)
+	return alice.New().Extend(*mHandler).Then(sHandler)
 }
 
 // BuildDefaultHTTPRouter creates a default HTTP router.

@@ -8,6 +8,7 @@ import (
 
 	"github.com/containous/alice"
 	"github.com/traefik/traefik/v2/pkg/types"
+	"github.com/valyala/fasthttp"
 )
 
 const (
@@ -35,16 +36,29 @@ func New(hostResolverConfig *types.HostResolverConfig) *RequestDecorator {
 	return requestDecorator
 }
 
-func (r *RequestDecorator) ServeHTTP(rw http.ResponseWriter, req *http.Request, next http.HandlerFunc) {
-	host := types.CanonicalDomain(parseHost(req.Host))
-	reqt := req.WithContext(context.WithValue(req.Context(), canonicalKey, host))
+func (r *RequestDecorator) Serve(next fasthttp.RequestHandler) func(ctx *fasthttp.RequestCtx) {
+	return func(ctx *fasthttp.RequestCtx) {
+		host := types.CanonicalDomain(parseHost(string(ctx.Host())))
+		ctx.SetUserValue(string(canonicalKey), host)
 
-	if r.hostResolver != nil && r.hostResolver.CnameFlattening {
-		flatHost := r.hostResolver.CNAMEFlatten(reqt.Context(), host)
-		reqt = reqt.WithContext(context.WithValue(reqt.Context(), flattenKey, flatHost))
+		if r.hostResolver != nil && r.hostResolver.CnameFlattening {
+			flatHost := r.hostResolver.CNAMEFlatten(host)
+			ctx.SetUserValue(string(flattenKey), flatHost)
+		}
+		next(ctx)
 	}
+}
 
-	next(rw, reqt)
+func (r *RequestDecorator) ServeHTTP(rw http.ResponseWriter, req *http.Request, next http.HandlerFunc) {
+	// host := types.CanonicalDomain(parseHost(req.Host))
+	// reqt := req.WithContext(context.WithValue(req.Context(), canonicalKey, host))
+	//
+	// if r.hostResolver != nil && r.hostResolver.CnameFlattening {
+	// 	flatHost := r.hostResolver.CNAMEFlatten(reqt.Context(), host)
+	// 	reqt = reqt.WithContext(context.WithValue(reqt.Context(), flattenKey, flatHost))
+	// }
+	//
+	// next(rw, reqt)
 }
 
 func parseHost(addr string) string {

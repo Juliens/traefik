@@ -1,7 +1,6 @@
 package requestdecorator
 
 import (
-	"context"
 	"fmt"
 	"net"
 	"sort"
@@ -33,7 +32,7 @@ type Resolver struct {
 }
 
 // CNAMEFlatten check if CNAME record exists, flatten if possible.
-func (hr *Resolver) CNAMEFlatten(ctx context.Context, host string) string {
+func (hr *Resolver) CNAMEFlatten(host string) string {
 	if hr.cache == nil {
 		hr.cache = cache.New(30*time.Minute, 5*time.Minute)
 	}
@@ -46,10 +45,10 @@ func (hr *Resolver) CNAMEFlatten(ctx context.Context, host string) string {
 		return value.(string)
 	}
 
-	logger := log.FromContext(ctx)
+	logger := log.WithoutContext()
 	cacheDuration := 0 * time.Second
 	for depth := 0; depth < hr.ResolvDepth; depth++ {
-		resolv, err := cnameResolve(ctx, request, hr.ResolvConfig)
+		resolv, err := cnameResolve(request, hr.ResolvConfig)
 		if err != nil {
 			logger.Error(err)
 			break
@@ -73,7 +72,7 @@ func (hr *Resolver) CNAMEFlatten(ctx context.Context, host string) string {
 }
 
 // cnameResolve resolves CNAME if exists, and return with the highest TTL.
-func cnameResolve(ctx context.Context, host, resolvPath string) (*cnameResolv, error) {
+func cnameResolve(host, resolvPath string) (*cnameResolv, error) {
 	config, err := dns.ClientConfigFromFile(resolvPath)
 	if err != nil {
 		return nil, fmt.Errorf("invalid resolver configuration file: %s", resolvPath)
@@ -88,7 +87,7 @@ func cnameResolve(ctx context.Context, host, resolvPath string) (*cnameResolv, e
 	for _, server := range config.Servers {
 		tempRecord, err := getRecord(client, m, server, config.Port)
 		if err != nil {
-			log.FromContext(ctx).Errorf("Failed to resolve host %s: %v", host, err)
+			log.WithoutContext().Errorf("Failed to resolve host %s: %v", host, err)
 			continue
 		}
 		result = append(result, tempRecord)

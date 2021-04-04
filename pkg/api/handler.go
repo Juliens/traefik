@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 
+	"github.com/buaazp/fasthttprouter"
 	assetfs "github.com/elazarl/go-bindata-assetfs"
 	"github.com/gorilla/mux"
 	"github.com/traefik/traefik/v2/pkg/config/dynamic"
@@ -13,6 +14,7 @@ import (
 	"github.com/traefik/traefik/v2/pkg/config/static"
 	"github.com/traefik/traefik/v2/pkg/log"
 	"github.com/traefik/traefik/v2/pkg/version"
+	"github.com/valyala/fasthttp"
 )
 
 type apiError struct {
@@ -57,9 +59,9 @@ type Handler struct {
 }
 
 // NewBuilder returns a http.Handler builder based on runtime.Configuration.
-func NewBuilder(staticConfig static.Configuration) func(*runtime.Configuration) http.Handler {
-	return func(configuration *runtime.Configuration) http.Handler {
-		return New(staticConfig, configuration).createRouter()
+func NewBuilder(staticConfig static.Configuration) func(*runtime.Configuration) fasthttp.RequestHandler {
+	return func(configuration *runtime.Configuration) fasthttp.RequestHandler {
+		return New(staticConfig, configuration).createFRouter()
 	}
 }
 
@@ -78,6 +80,39 @@ func New(staticConfig static.Configuration, runtimeConfig *runtime.Configuration
 		staticConfig:         staticConfig,
 		debug:                staticConfig.API.Debug,
 	}
+}
+
+func (h Handler) createFRouter() fasthttp.RequestHandler {
+	router := fasthttprouter.New()
+	router.Handle(http.MethodGet, "/api/rawdata", func(ctx *fasthttp.RequestCtx) {
+		siRepr := make(map[string]*serviceInfoRepresentation, len(h.runtimeConfiguration.Services))
+		for k, v := range h.runtimeConfiguration.Services {
+			siRepr[k] = &serviceInfoRepresentation{
+				ServiceInfo:  v,
+				ServerStatus: v.GetAllStatus(),
+			}
+		}
+
+		result := RunTimeRepresentation{
+			Routers:     h.runtimeConfiguration.Routers,
+			Middlewares: h.runtimeConfiguration.Middlewares,
+			Services:    siRepr,
+			TCPRouters:  h.runtimeConfiguration.TCPRouters,
+			TCPServices: h.runtimeConfiguration.TCPServices,
+			UDPRouters:  h.runtimeConfiguration.UDPRouters,
+			UDPServices: h.runtimeConfiguration.UDPServices,
+		}
+
+		ctx.Request.Header.Set("Content-Type", "application/json")
+
+		err := json.NewEncoder(ctx.Response.BodyWriter()).Encode(result)
+		if err != nil {
+			log.WithoutContext().Error(err)
+			ctx.Error(err.Error(), http.StatusInternalServerError)
+			// http.Error(rw, err.Error(), http.StatusInternalServerError)
+		}
+	})
+	return router.Handler
 }
 
 // createRouter creates API routes and router.

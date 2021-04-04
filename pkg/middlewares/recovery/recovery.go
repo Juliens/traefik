@@ -1,12 +1,11 @@
 package recovery
 
 import (
-	"context"
 	"net/http"
 	"runtime"
 
 	"github.com/traefik/traefik/v2/pkg/log"
-	"github.com/traefik/traefik/v2/pkg/middlewares"
+	"github.com/valyala/fasthttp"
 )
 
 const (
@@ -15,38 +14,42 @@ const (
 )
 
 type recovery struct {
-	next http.Handler
+	next fasthttp.RequestHandler
 }
 
 // New creates recovery middleware.
-func New(ctx context.Context, next http.Handler) (http.Handler, error) {
-	log.FromContext(middlewares.GetLoggerCtx(ctx, middlewareName, typeName)).Debug("Creating middleware")
+func New(next fasthttp.RequestHandler) (fasthttp.RequestHandler, error) {
+	// log.FromContext(middlewares.GetLoggerCtx(ctx, middlewareName, typeName)).Debug("Creating middleware")
 
-	return &recovery{
+	r := &recovery{
 		next: next,
-	}, nil
+	}
+	return r.Serve, nil
 }
 
+func (re *recovery) Serve(ctx *fasthttp.RequestCtx) {
+	defer recoverFunc(ctx)
+	re.next(ctx)
+}
 func (re *recovery) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
-	defer recoverFunc(rw, req)
-	re.next.ServeHTTP(rw, req)
+	// defer recoverFunc(rw, req)
+	// re.next.ServeHTTP(rw, req)
 }
 
-func recoverFunc(rw http.ResponseWriter, r *http.Request) {
+func recoverFunc(ctx *fasthttp.RequestCtx) {
 	if err := recover(); err != nil {
-		logger := log.FromContext(middlewares.GetLoggerCtx(r.Context(), middlewareName, typeName))
+		logger := log.WithoutContext()
 		if !shouldLogPanic(err) {
-			logger.Debugf("Request has been aborted [%s - %s]: %v", r.RemoteAddr, r.URL, err)
+			logger.Debugf("Request has been aborted [%s - %s]: %v", ctx.RemoteAddr(), ctx.URI(), err)
 			return
 		}
 
-		logger.Errorf("Recovered from panic in HTTP handler [%s - %s]: %+v", r.RemoteAddr, r.URL, err)
+		logger.Errorf("Recovered from panic in HTTP handler [%s - %s]: %+v", ctx.RemoteAddr(), ctx.URI(), err)
 		const size = 64 << 10
 		buf := make([]byte, size)
 		buf = buf[:runtime.Stack(buf, false)]
 		logger.Errorf("Stack: %s", buf)
-
-		http.Error(rw, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		ctx.Error(http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	assetfs "github.com/elazarl/go-bindata-assetfs"
 	"github.com/gorilla/mux"
 	"github.com/traefik/traefik/v2/pkg/log"
+	"github.com/valyala/fasthttp"
 )
 
 // DashboardHandler expose dashboard routes.
@@ -38,6 +39,11 @@ func (g DashboardHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Content-Security-Policy/frame-src
 	w.Header().Set("Content-Security-Policy", "frame-src 'self' https://traefik.io https://*.traefik.io;")
 	http.FileServer(g.Assets).ServeHTTP(w, r)
+}
+
+func (g DashboardHandler) Server(ctx *fasthttp.RequestCtx) {
+	ctx.Request.Header.Set("Content-Security-Policy", "frame-src 'self' https://traefik.io https://*.traefik.io;")
+	// fasthttp.FSHandler()
 }
 
 func safePrefix(req *http.Request) string {
